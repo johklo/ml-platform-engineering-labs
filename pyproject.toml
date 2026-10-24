@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=75,<76"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ml-platform-engineering-labs"
+version = "0.1.0"
+description = "Local and Azure end-to-end MLOps learning labs"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "mlflow==2.16.2",
+  "numpy==1.26.4",
+  "pandas==2.2.3",
+  "scikit-learn==1.5.2",
+  "joblib==1.4.2",
+  "pillow==11.0.0",
+  "fastapi==0.115.5",
+  "uvicorn==0.32.1",
+  "prometheus-client==0.21.0",
+  "pyyaml==6.0.2",
+  "sqlalchemy==2.0.36",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==8.3.3", "httpx==0.27.2", "ruff==0.8.6"]
+# Keep heavyweight/incompatible integrations isolated from the offline CPU baseline.
+vision = ["ultralytics==8.3.40"]
+feast = ["feast[redis]==0.40.1", "pyarrow==17.0.0"]
+bento = ["bentoml==1.3.10", "setuptools==80.9.0"]
+monitor = ["evidently==0.4.40"]
+pipeline = ["kfp==2.10.1"]
+azure = [
+  "azure-ai-ml==1.30.0",
+  "azure-identity==1.25.1",
+  "azure-storage-blob==12.27.0",
+  "azure-search-documents==11.6.0",
+  "azureml-mlflow==1.62.0.post6",
+  "openai==1.109.1",
+]
+azure-vision = ["ultralytics==8.3.40"]
+langfuse = ["langfuse==2.59.7"]
+deepeval = ["deepeval==2.5.5"]
+guardrails = ["guardrails-ai==0.6.7"]
+redisvl = ["redisvl==0.4.1", "redis==5.2.1"]
+
+[project.scripts]
+ml-labs = "ml_labs.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.uv]
+conflicts = [
+  [{ extra = "bento" }, { extra = "deepeval" }],
+  [{ extra = "feast" }, { extra = "redisvl" }],
+  [{ extra = "pipeline" }, { extra = "guardrails" }],
+  [{ extra = "bento" }, { extra = "guardrails" }],
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--basetemp=.lab-test-work"
+markers = ["vision: real CPU YOLO training (requires vision extra)", "integration: local tracked end-to-end execution"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]

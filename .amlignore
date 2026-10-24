@@ -1,0 +1,16 @@
+.git/
+.venv/
+.env
+.azure/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+work/
+runs/
+*.egg-info/
+docs/
+tests/
+infra/
+.github/
+*.db
+*.pt

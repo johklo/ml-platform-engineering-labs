@@ -23,6 +23,8 @@ def register_candidate(candidate_path: str | Path, model_name: str, report_path:
         report.get("task") != candidate["task"]
         or report.get("passed") is not True
         or report_candidate.get("run_id") != candidate["run_id"]
+        or report_candidate.get("model_uri") != candidate["model_uri"]
+        or report_candidate.get("tracking_uri") != candidate["tracking_uri"]
     ):
         raise ValueError(
             f"Registry promotion requires a passing {candidate['task']} evaluation report."
@@ -30,8 +32,7 @@ def register_candidate(candidate_path: str | Path, model_name: str, report_path:
     mlflow.set_tracking_uri(candidate["tracking_uri"])
     registered = mlflow.register_model(candidate["model_uri"], model_name)
     client = MlflowClient()
-    client.set_registered_model_alias(model_name, alias, registered.version)
-    uri = f"models:/{model_name}@{alias}"
+    uri = f"models:/{model_name}/{registered.version}"
     model = mlflow.pyfunc.load_model(uri)
     task = candidate["task"]
     if task == "cards":
@@ -44,6 +45,7 @@ def register_candidate(candidate_path: str | Path, model_name: str, report_path:
     result = model.predict(probe)
     if result.empty:
         raise RuntimeError("Registered model reload returned no prediction rows.")
+    client.set_registered_model_alias(model_name, alias, registered.version)
     candidate.update({
         "registered_model": model_name,
         "registered_version": str(registered.version),

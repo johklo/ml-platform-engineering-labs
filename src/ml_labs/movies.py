@@ -7,7 +7,7 @@ import pandas as pd
 from mlflow.models import infer_signature
 from sklearn.decomposition import TruncatedSVD
 
-from ml_labs.common import record_context, setup_tracking, verify_dataset, write_json, read_json
+from ml_labs.common import read_json, record_context, setup_tracking, verify_dataset, write_json
 from ml_labs.data import validate_ratings
 
 
@@ -93,7 +93,10 @@ def train_movies(data, output, rank=4, seed=42, work="work"):
             code_paths=[str(Path(__file__).parent)],
             signature=infer_signature(example, model.predict(None, example)),
             input_example=example,
-            pip_requirements=["mlflow==2.16.2", "numpy==1.26.4", "pandas==2.2.3"],
+            pip_requirements=[
+                "mlflow==2.16.2", "numpy==1.26.4", "pandas==2.2.3",
+                "scikit-learn==1.5.2", "pillow==11.0.0",
+            ],
         )
         model_uri = f"runs:/{run.info.run_id}/model"
         write_json(output / "candidate.json", {

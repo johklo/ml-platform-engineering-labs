@@ -10,6 +10,10 @@ from ml_labs.common import fingerprint, write_json
 
 def prepare_movies(output, seed=42, users=48, items=32):
     output = Path(output)
+    if users < 2 or items < 6:
+        raise ValueError("Need at least two users and six items.")
+    if output.exists() and any(output.iterdir()):
+        raise FileExistsError(f"Choose an empty dataset directory: {output}")
     output.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(seed)
     user_factors = rng.normal(size=(users, 4))
@@ -72,6 +76,10 @@ def validate_ratings(frame):
 
 def prepare_cards(output, seed=42, train=80, validation=20, test=20):
     output = Path(output).resolve()
+    if min(train, validation, test) < 2:
+        raise ValueError("Each split needs at least two images, including a positive example.")
+    if output.exists() and any(output.iterdir()):
+        raise FileExistsError(f"Choose an empty dataset directory: {output}")
     rng = np.random.default_rng(seed)
     for split, count in (("train", train), ("val", validation), ("test", test)):
         images, labels = output / "images" / split, output / "labels" / split

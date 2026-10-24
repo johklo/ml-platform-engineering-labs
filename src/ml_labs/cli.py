@@ -71,6 +71,10 @@ def make_parser() -> argparse.ArgumentParser:
     movie_prepare = movie_cmd.add_parser("prepare")
     _add_output(movie_prepare, "data/movies")
     movie_prepare.add_argument("--seed", type=int, default=42)
+    movie_import = movie_cmd.add_parser("import-movielens")
+    movie_import.add_argument("--archive", type=_path, required=True)
+    movie_import.add_argument("--output", type=_path, required=True)
+    movie_import.add_argument("--min-events", type=int, default=10)
     movie_train = movie_cmd.add_parser("train")
     movie_train.add_argument("--data", type=_path, default=Path("data/movies"))
     _add_output(movie_train, ".ml-labs/runs/movies")
@@ -129,6 +133,9 @@ def make_parser() -> argparse.ArgumentParser:
         sub.add_argument("--candidate", type=_path)
         sub.add_argument("--report", type=_path)
         sub.add_argument("--compute", default="azureml:cpu-cluster")
+        if action == "pipeline":
+            sub.add_argument("--cards-backend", choices=["color_component_baseline", "yolov8"],
+                             default="color_component_baseline")
         sub.add_argument("--execute", action="store_true",
                          help="Submit a rendered job to an existing workspace; does not create Azure resources.")
 
@@ -136,17 +143,28 @@ def make_parser() -> argparse.ArgumentParser:
     tool_cmd = tools.add_subparsers(dest="tool", required=True)
     feast = tool_cmd.add_parser("feast", help="Initialize or run Feast against an existing local feature repo")
     feast_cmd = feast.add_subparsers(dest="action", required=True)
-    feast_init = feast_cmd.add_parser("init")
+    feast_init = feast_cmd.add_parser(
+        "init", help="Build train-only point-in-time user snapshots from prepared movie data"
+    )
+    feast_init.add_argument("--data", type=_path, required=True,
+                            help="Prepared movie dataset directory (ml-labs movies prepare)")
     _add_output(feast_init, "integrations/feast")
     feast_run = feast_cmd.add_parser("run")
     feast_run.add_argument("--repo", type=_path, default=Path("integrations/feast"))
     feast_run.add_argument(
         "--action", choices=["apply", "materialize", "online", "historical"], required=True
     )
-    kfp = tool_cmd.add_parser("kfp", help="Compile the real Kubeflow Pipelines graph")
+    feast_run.add_argument("--user-id", help="Entity from the dataset (default: first user)")
+    feast_run.add_argument("--end-date",
+                           help="materialize only: timezone-aware ISO end time (default: all data)")
+    kfp = tool_cmd.add_parser("kfp", help="Compile (not submit) the movie Kubeflow pipeline")
     kfp_cmd = kfp.add_subparsers(dest="action", required=True)
     kfp_compile = kfp_cmd.add_parser("compile")
-    kfp_compile.add_argument("--output", type=_path, default=Path("integrations/kfp/local-pipeline.yaml"))
+    kfp_compile.add_argument("--output", type=_path, default=Path("integrations/kfp/movie-pipeline.yaml"))
+    kfp_compile.add_argument("--source-revision", required=True,
+                             help="Git commit baked into the image, e.g. $(git rev-parse HEAD)")
+    kfp_compile.add_argument("--image", default=None,
+                             help="Pushed image built from ./Dockerfile (default: explicit placeholder)")
     bento = tool_cmd.add_parser("bento", help="Build or run a BentoML service")
     bento_cmd = bento.add_subparsers(dest="action", required=True)
     bento_build = bento_cmd.add_parser("build")
@@ -208,7 +226,11 @@ def _execute(args) -> int:
             result = evaluate_cards(args.candidate, args.data, args.report, args.min_iou)
         _emit({"result": result})
     elif args.command == "movies":
-        if args.action == "prepare":
+        if args.action == "import-movielens":
+            from ml_labs.movielens import import_movielens
+
+            result = import_movielens(args.archive, args.output, args.min_events)
+        elif args.action == "prepare":
             result = prepare_movies(args.output, seed=args.seed)
         elif args.action == "train":
             result = train_movies(args.data, args.output, args.rank, args.seed, args.work)
@@ -258,7 +280,9 @@ def _execute(args) -> int:
                 raise ValueError("Only pipeline submission is automated; endpoint deployment is render-only.")
             _emit(submit_existing_workspace(args.output))
         elif args.action == "pipeline":
-            _emit({"output": render_pipeline(args.output, compute=args.compute)})
+            _emit({"output": render_pipeline(
+                args.output, compute=args.compute, cards_backend=args.cards_backend,
+            )})
         else:
             if not args.candidate:
                 raise ValueError("Endpoint rendering needs --candidate.")
@@ -304,13 +328,15 @@ def _run_tool(args) -> None:
         from ml_labs.integrations import feast_init, feast_run
 
         if args.action == "init":
-            _emit({"repo": feast_init(args.output)})
+            _emit({"repo": feast_init(args.output, args.data)})
         else:
-            _emit(feast_run(args.repo, args.action))
+            if args.end_date and args.action != "materialize":
+                raise ValueError("--end-date applies only to --action materialize.")
+            _emit(feast_run(args.repo, args.action, user_id=args.user_id, end_date=args.end_date))
     elif args.tool == "kfp":
-        from ml_labs.integrations import compile_kfp
+        from ml_labs.integrations import KFP_IMAGE_PLACEHOLDER, compile_kfp
 
-        _emit({"output": compile_kfp(args.output)})
+        _emit(compile_kfp(args.output, args.source_revision, args.image or KFP_IMAGE_PLACEHOLDER))
     elif args.tool == "bento":
         from ml_labs.integrations import build_bento
 

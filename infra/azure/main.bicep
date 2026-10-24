@@ -9,6 +9,12 @@ param location string = resourceGroup().location
 @description('Opt in to creating Azure AI Search and Azure OpenAI for the RAG extension.')
 param deployRagServices bool = false
 
+@description('Model available in the chosen region. Check availability before deployment.')
+param chatModelName string = 'gpt-4o-mini'
+
+@description('Exact supported model version. The sample value is not an availability guarantee.')
+param chatModelVersion string = '2024-07-18'
+
 @description('Azure OpenAI account name; must be globally unique.')
 param openAiName string = '${namePrefix}-openai-${uniqueString(resourceGroup().id)}'
 
@@ -17,6 +23,9 @@ param searchName string = '${namePrefix}-search-${uniqueString(resourceGroup().i
 
 @description('Optional developer object ID for user-assigned Azure RAG data-plane roles.')
 param developerPrincipalId string = ''
+
+@description('Opt in to a CPU cluster. minNodes=0; running jobs incur charges.')
+param deployCompute bool = false
 
 var suffix = uniqueString(resourceGroup().id)
 var storageName = toLower(replace('${namePrefix}${suffix}', '-', ''))
@@ -93,6 +102,54 @@ resource workspace 'Microsoft.MachineLearningServices/workspaces@2024-04-01' = {
   }
 }
 
+resource cpu 'Microsoft.MachineLearningServices/workspaces/computes@2024-04-01' = if (deployCompute) {
+  parent: workspace
+  name: 'cpu-cluster'
+  location: location
+  properties: {
+    computeType: 'AmlCompute'
+    properties: {
+      vmSize: 'Standard_DS3_v2'
+      vmPriority: 'Dedicated'
+      scaleSettings: {
+        minNodeCount: 0
+        maxNodeCount: 2
+        nodeIdleTimeBeforeScaleDown: 'PT120S'
+      }
+    }
+  }
+}
+
+resource workspaceBlobRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storage.id, workspace.id, 'blob-contributor')
+  scope: storage
+  properties: {
+    principalId: workspace.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
+  }
+}
+
+resource workspaceVaultRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(keyVault.id, workspace.id, 'secrets-officer')
+  scope: keyVault
+  properties: {
+    principalId: workspace.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7')
+  }
+}
+
+resource workspaceAcrRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(registry.id, workspace.id, 'acr-push')
+  scope: registry
+  properties: {
+    principalId: workspace.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '8311e382-0749-4cb8-b61a-304f252e45ec')
+  }
+}
+
 resource search 'Microsoft.Search/searchServices@2023-11-01' = if (deployRagServices) {
   name: searchName
   location: location
@@ -137,8 +194,8 @@ resource chatDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-1
   properties: {
     model: {
       format: 'OpenAI'
-      name: 'gpt-4o-mini'
-      version: '2024-07-18'
+      name: chatModelName
+      version: chatModelVersion
     }
     versionUpgradeOption: 'NoAutoUpgrade'
   }
@@ -167,6 +224,16 @@ resource openAiRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (d
       'Microsoft.Authorization/roleDefinitions',
       '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'
     )
+  }
+}
+
+resource searchServiceRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployRagServices && !empty(developerPrincipalId)) {
+  name: guid(search.id, developerPrincipalId, 'search-service-contributor')
+  scope: search
+  properties: {
+    principalId: developerPrincipalId
+    principalType: 'User'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7ca78c08-252a-4471-8644-bb5ff32d4ba0')
   }
 }
 

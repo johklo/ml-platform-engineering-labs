@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import base64
+from io import BytesIO
 from pathlib import Path
 
 import mlflow
 import numpy as np
 import pandas as pd
-from mlflow.models import infer_signature
+from mlflow.models import ModelSignature, infer_signature
+from mlflow.types import ColSpec, Schema
 from PIL import Image
 
 from ml_labs.common import read_json, record_context, setup_tracking, verify_dataset, write_json
@@ -71,6 +74,8 @@ def evaluate_card_split(data: str | Path, split: str, backend: str = "color_comp
     ious: list[float] = []
     detected = 0
     total = 0
+    negative_images = 0
+    false_positives = 0
     yolo_model = None
     if backend == "yolov8":
         if model_path is None:
@@ -101,15 +106,21 @@ def evaluate_card_split(data: str | Path, split: str, backend: str = "color_comp
                 (center_x + box_width / 2) * image_width,
                 (center_y + box_height / 2) * image_height,
             ]
-        ious.append(_iou(prediction, ground_truth))
+        if ground_truth is None:
+            negative_images += 1
+            false_positives += int(prediction is not None)
+        else:
+            ious.append(_iou(prediction, ground_truth))
         total += 1
-    if total == 0:
-        raise ValueError(f"No images found in split {split!r} under {root}.")
+    if not ious:
+        raise ValueError(f"No positive card images found in split {split!r} under {root}.")
     return {
         "images": total,
         "detection_rate": detected / total,
         "mean_iou": float(np.mean(ious)),
         "box_recall_iou_0_5": float(np.mean(np.asarray(ious) >= 0.5)),
+        "negative_images": negative_images,
+        "false_positives": false_positives,
     }
 
 
@@ -124,19 +135,31 @@ class CardDetector(mlflow.pyfunc.PythonModel):
 
     def predict(self, context, model_input, params=None):
         results = []
-        for path in model_input["image_path"]:
-            if not isinstance(path, str) or not Path(path).is_file():
-                raise ValueError(f"image_path must point to an existing image: {path!r}")
-            with Image.open(path) as source:
+        for record in model_input.to_dict(orient="records"):
+            path = record.get("image_path")
+            encoded = record.get("image_base64")
+            has_path = isinstance(path, str) and bool(path)
+            has_bytes = isinstance(encoded, str) and bool(encoded)
+            if has_path == has_bytes:
+                raise ValueError("Provide exactly one of image_path or image_base64.")
+            if has_bytes:
+                if len(encoded) > 14_000_000:
+                    raise ValueError("Encoded image exceeds the 10 MB input limit.")
+                image_source = BytesIO(base64.b64decode(encoded, validate=True))
+            else:
+                if not Path(path).is_file():
+                    raise ValueError(f"image_path must point to an existing image: {path!r}")
+                image_source = path
+            with Image.open(image_source) as source:
                 image = source.convert("RGB")
             if self.config["backend"] == "color_component_baseline":
                 box = detect_color_component(image)
             else:
-                predictions = self.yolo.predict(source=path, verbose=False)[0]
+                predictions = self.yolo.predict(source=image, verbose=False)[0]
                 boxes = predictions.boxes.xyxy.cpu().numpy()
                 box = boxes[int(predictions.boxes.conf.argmax())].tolist() if len(boxes) else None
             results.append({
-                "image_path": path,
+                "image_path": path if has_path else "",
                 "detected": box is not None,
                 "x_min": float("nan") if box is None else float(box[0]),
                 "y_min": float("nan") if box is None else float(box[1]),
@@ -165,9 +188,16 @@ def train_cards(data: str | Path, output: str | Path, backend: str = "color_comp
             raise RuntimeError("Install the optional detector with `pip install -e .[vision]`.") from exc
         if epochs < 1:
             raise ValueError("epochs must be at least 1.")
+        import yaml
+
+        runtime_dataset = output / "dataset.yaml"
+        runtime_dataset.write_text(yaml.safe_dump({
+            "path": str(data.resolve()), "train": "images/train", "val": "images/val",
+            "test": "images/test", "names": {0: "synthetic_id_card"},
+        }), encoding="utf-8")
         trainer = YOLO("yolov8n.pt")
         trainer.train(
-            data=str(data / "dataset.yaml"), epochs=epochs, imgsz=128, device="cpu",
+            data=str(runtime_dataset.resolve()), epochs=epochs, imgsz=128, device="cpu",
             project=str(output / "yolo"), name="synthetic-cards", exist_ok=True, verbose=False,
         )
         weights = Path(trainer.trainer.save_dir) / "weights" / "best.pt"
@@ -190,13 +220,21 @@ def train_cards(data: str | Path, output: str | Path, backend: str = "color_comp
         }})()
         pyfunc.load_context(fake_context)
         mlflow.pyfunc.log_model(
-            "model", python_model=pyfunc, artifacts=artifacts,
+            "model", python_model=CardDetector(), artifacts=artifacts,
             code_paths=[str(Path(__file__).parent)],
-            signature=infer_signature(sample, pyfunc.predict(None, sample)),
+            signature=ModelSignature(
+                inputs=Schema([
+                    ColSpec("string", "image_path", required=False),
+                    ColSpec("string", "image_base64", required=False),
+                ]),
+                outputs=infer_signature(sample, pyfunc.predict(None, sample)).outputs,
+            ),
             input_example=sample,
             pip_requirements=[
                 "mlflow==2.16.2", "numpy==1.26.4", "pandas==2.2.3", "pillow==11.0.0",
-            ] + (["ultralytics==8.3.40"] if backend == "yolov8" else []),
+            ] + ([
+                "ultralytics==8.3.40", "torch==2.5.1", "torchvision==0.20.1",
+            ] if backend == "yolov8" else []),
         )
         candidate = {
             "task": "cards",
@@ -239,6 +277,8 @@ def evaluate_cards(candidate_path: str | Path, data: str | Path, output: str | P
         raise ValueError("The test split is empty.")
     predictions = model.predict(pd.DataFrame({"image_path": [str(p.resolve()) for p in test_images]}))
     per_image = []
+    negative_images = 0
+    false_positives = 0
     for row in predictions.itertuples():
         predicted = None if not row.detected else [row.x_min, row.y_min, row.x_max, row.y_max]
         actual = _read_box(Path(data) / "labels" / "test" / f"{Path(row.image_path).stem}.txt")
@@ -250,11 +290,19 @@ def evaluate_cards(candidate_path: str | Path, data: str | Path, output: str | P
             (actual[0] + actual[2] / 2) * size[0],
             (actual[1] + actual[3] / 2) * size[1],
         ]
-        per_image.append(_iou(predicted, actual_pixels))
+        if actual_pixels is None:
+            negative_images += 1
+            false_positives += int(predicted is not None)
+        else:
+            per_image.append(_iou(predicted, actual_pixels))
+    if not per_image:
+        raise ValueError("The test split has no positive card images.")
     metrics = {
         "images": len(test_images),
         "mean_iou": float(np.mean(per_image)),
         "box_recall_iou_0_5": float(np.mean(np.asarray(per_image) >= 0.5)),
+        "negative_images": negative_images,
+        "false_positives": false_positives,
     }
     report = {
         "task": "cards", "passed": metrics["mean_iou"] >= min_iou,

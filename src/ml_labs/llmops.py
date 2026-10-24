@@ -148,19 +148,18 @@ def trace_with_langfuse(candidate_path: str | Path, question: str) -> dict[str, 
         from langfuse import Langfuse
     except ImportError as exc:
         raise RuntimeError("Install Langfuse using `uv sync --extra langfuse`.") from exc
-    answer = query_local(candidate_path, question)
     client = Langfuse()
     trace = client.trace(
         name="ml-labs-local-rag",
         input={"query": question},
-        output={"answer_mode": answer["answer_mode"], "citations": answer["citations"]},
     )
     span = trace.span(
         name="tfidf-retrieval",
         input={"query": question},
-        output={"answer": answer["answer"], "citations": answer["citations"]},
     )
-    span.end()
+    answer = query_local(candidate_path, question)
+    span.end(output={"answer": answer["answer"], "citations": answer["citations"]})
+    trace.update(output={"answer_mode": answer["answer_mode"], "citations": answer["citations"]})
     client.flush()
     return {
         "trace_id": trace.id,
@@ -208,7 +207,7 @@ def redisvl_index(
     index = SearchIndex.from_dict(schema, redis_url=redis_url or os.environ.get(
         "REDIS_URL", "redis://localhost:6379"
     ))
-    index.create(overwrite=True)
+    index.create(overwrite=False)
     records = [
         {
             "doc_id": document["id"],
@@ -227,7 +226,6 @@ def redisvl_index(
         "documents": len(records),
         "dimensions": int(matrix.shape[1]),
         "state": str(state_path),
-        "redis_url": redis_url or os.environ.get("REDIS_URL", "redis://localhost:6379"),
     }
 
 

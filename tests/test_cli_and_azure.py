@@ -52,3 +52,17 @@ def test_registry_rejects_missing_or_failed_gate_before_mlflow_access(tmp_path: 
 
     with pytest.raises(ValueError, match="passing"):
         register_candidate(candidate, "should-not-register", report)
+
+
+def test_azure_sdk_loads_rendered_components_without_contacting_workspace(tmp_path: Path) -> None:
+    azure = pytest.importorskip("azure.ai.ml")
+    path = render_pipeline(tmp_path / "pipeline.yml", cards_backend="yolov8")
+    job = azure.load_job(source=str(path))
+    assert not job._validate().error_messages
+    assert len(job.jobs) == 9
+    component = yaml.safe_load(
+        (tmp_path / "pipeline-components" / "train_cards.yml").read_text(encoding="utf-8")
+    )
+    assert "--backend yolov8" in component["command"]
+    assert component["environment"]["conda_file"].endswith("environment-vision.yml")
+    assert "ML_LABS_CODE_REVISION=" in component["command"]

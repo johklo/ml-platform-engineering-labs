@@ -12,5 +12,12 @@ docs/
 tests/
 infra/
 .github/
+.ml-labs/
+mlruns/
+data/
+.lab-test-work/
+*.zip
+*.pdf
+*.epub
 *.db
 *.pt

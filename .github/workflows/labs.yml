@@ -15,10 +15,30 @@ jobs:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@v5
       - name: Install local CPU dependencies
-        run: uv sync --extra dev
+        run: uv sync --locked --extra dev
       - name: Lint
-        run: uv run ruff check src tests
+        run: uv run --extra dev ruff check src tests
       - name: Unit and local integration tests
-        run: uv run pytest -q
+        run: uv run --extra dev pytest -q
       - name: Three-project local smoke
         run: uv run ml-labs smoke --work .ml-labs/ci-smoke
+
+  native-tools:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - extra: feast
+            selector: native_feast
+          - extra: pipeline
+            selector: native_kfp
+          - extra: monitor
+            selector: native_evidently
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Exercise actual optional SDK
+        run: uv run --locked --extra dev --extra ${{ matrix.extra }} pytest -q tests/test_optional_integrations.py -k ${{ matrix.selector }}

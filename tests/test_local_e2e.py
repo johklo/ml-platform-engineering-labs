@@ -1,9 +1,13 @@
+import base64
 from pathlib import Path
 
+import mlflow
+import pandas as pd
 from fastapi.testclient import TestClient
 
 from ml_labs.api import create_app
 from ml_labs.cards import evaluate_cards, train_cards
+from ml_labs.common import read_json
 from ml_labs.data import prepare_cards, prepare_movies
 from ml_labs.movies import evaluate_movies, train_movies
 from ml_labs.rag import evaluate_retrieval, index_documents, prepare_documents
@@ -32,6 +36,13 @@ def test_local_train_evaluate_register_reload_and_http(tmp_path: Path) -> None:
     app = create_app(cards, movies, rag)
     client = TestClient(app)
     image = next((cards_data / "images" / "test").glob("*.png"))
+    metadata = read_json(cards)
+    mlflow.set_tracking_uri(metadata["tracking_uri"])
+    packaged = mlflow.pyfunc.load_model(metadata["registered_uri"])
+    byte_request = pd.DataFrame({
+        "image_base64": [base64.b64encode(image.read_bytes()).decode("ascii")],
+    })
+    assert len(packaged.predict(byte_request)) == 1
     assert client.get("/health").json()["models"] == {
         "cards": True, "movies": True, "rag": True,
     }

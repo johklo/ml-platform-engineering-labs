@@ -8,13 +8,14 @@ from pathlib import Path
 
 import yaml
 
-from ml_labs.common import read_json
+from ml_labs.common import git_commit, read_json
 
 ROOT = Path(__file__).resolve().parents[2]
 ENVIRONMENT_IMAGE = "mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu22.04:latest"
 
 
-def render_pipeline(output: str | Path, compute: str = "azureml:cpu-cluster") -> Path:
+def render_pipeline(output: str | Path, compute: str = "azureml:cpu-cluster",
+                    cards_backend: str = "color_component_baseline") -> Path:
     """Render cards, recommendation, and RAG jobs with explicit output dependencies."""
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -25,7 +26,13 @@ def render_pipeline(output: str | Path, compute: str = "azureml:cpu-cluster") ->
         ROOT / "infra" / "azure" / "environment.yml", component_dir.resolve()
     ).replace("\\", "/")
     jobs = {}
+    if cards_backend not in {"color_component_baseline", "yolov8"}:
+        raise ValueError("Unsupported cards backend.")
+    revision = git_commit()
     for task in ("cards", "movies", "rag"):
+        task_environment = environment_path
+        if task == "cards" and cards_backend == "yolov8":
+            task_environment = environment_path.replace("environment.yml", "environment-vision.yml")
         prepare_job = f"prepare_{task}"
         train_job = f"train_{task}"
         evaluate_job = f"evaluate_{task}"
@@ -40,6 +47,7 @@ def render_pipeline(output: str | Path, compute: str = "azureml:cpu-cluster") ->
             code_path=code_path,
             environment_path=environment_path,
             outputs={"data": {"type": "uri_folder"}},
+            revision=revision,
         )
         jobs[prepare_job] = {
             "type": "command",
@@ -53,16 +61,17 @@ def render_pipeline(output: str | Path, compute: str = "azureml:cpu-cluster") ->
             "--data ${{inputs.data}} --output ${{outputs.model}}"
         )
         if task == "cards":
-            train_command += " --backend color_component_baseline"
+            train_command += f" --backend {cards_backend}"
         train_component = component_dir / f"{train_job}.yml"
         _write_component(
             train_component,
             name=train_job.replace("_", "-"),
             command=train_command,
             code_path=code_path,
-            environment_path=environment_path,
+            environment_path=task_environment,
             inputs={"data": {"type": "uri_folder"}},
             outputs={"model": {"type": "uri_folder"}},
+            revision=revision,
         )
         jobs[train_job] = {
             "type": "command",
@@ -87,9 +96,10 @@ def render_pipeline(output: str | Path, compute: str = "azureml:cpu-cluster") ->
             name=evaluate_job.replace("_", "-"),
             command=evaluate_command,
             code_path=code_path,
-            environment_path=environment_path,
+            environment_path=task_environment,
             inputs=evaluate_inputs,
             outputs={"report": {"type": "uri_folder"}},
+            revision=revision,
         )
         jobs[evaluate_job] = {
             "type": "command",
@@ -119,14 +129,14 @@ def render_pipeline(output: str | Path, compute: str = "azureml:cpu-cluster") ->
 
 def _write_component(path: Path, name: str, command: str, code_path: str,
                      environment_path: str, inputs: dict | None = None,
-                     outputs: dict | None = None) -> None:
+                     outputs: dict | None = None, revision: str = "") -> None:
     component = {
         "$schema": "https://azuremlschemas.azureedge.net/latest/commandComponent.schema.json",
         "name": name,
         "type": "command",
         "is_deterministic": False,
         "code": code_path,
-        "command": command,
+        "command": f"ML_LABS_CODE_REVISION={revision} {command}",
         "environment": {
             "image": ENVIRONMENT_IMAGE,
             "conda_file": environment_path,
@@ -151,6 +161,8 @@ def render_endpoint(candidate_path: str | Path, output: str | Path,
         report.get("task") != candidate.get("task")
         or report.get("passed") is not True
         or report_candidate.get("run_id") != candidate.get("run_id")
+        or report_candidate.get("model_uri") != candidate.get("model_uri")
+        or report_candidate.get("tracking_uri") != candidate.get("tracking_uri")
     ):
         raise ValueError("Endpoint rendering requires a passing evaluation report for the candidate.")
     mlflow.set_tracking_uri(candidate["tracking_uri"])
@@ -168,6 +180,7 @@ Requires an existing workspace, network access, permissions, and paid online com
 Run: python deploy_endpoint.py --endpoint-name <globally-unique-name>
 """
 import argparse
+from pathlib import Path
 from azure.ai.ml import MLClient
 from azure.ai.ml.constants import AssetTypes
 from azure.ai.ml.entities import ManagedOnlineDeployment, ManagedOnlineEndpoint, Model
@@ -180,7 +193,7 @@ args = parser.parse_args()
 client = MLClient.from_config(credential=DefaultAzureCredential())
 endpoint = ManagedOnlineEndpoint(name=args.endpoint_name, auth_mode="key")
 client.online_endpoints.begin_create_or_update(endpoint).result()
-model = Model(path="./model", type=AssetTypes.MLFLOW)
+model = Model(path=str(Path(__file__).resolve().parent / "model"), type=AssetTypes.MLFLOW)
 deployment = ManagedOnlineDeployment(
     name="blue", endpoint_name=args.endpoint_name, model=model,
     instance_type=args.instance_type, instance_count=1,
@@ -197,7 +210,7 @@ print(f"Deployment ready: {args.endpoint_name}/blue")
 
 
 def submit_existing_workspace(pipeline_path: str | Path) -> dict[str, str]:
-    """Submit to a workspace already selected by Azure ML config; creates no workspace."""
+    """Submit a billable job to existing compute; creates no workspace."""
     try:
         from azure.ai.ml import MLClient, load_job
         from azure.identity import DefaultAzureCredential

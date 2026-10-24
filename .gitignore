@@ -6,6 +6,7 @@ __pycache__/
 .ruff_cache/
 .env
 .azure/
+config.json
 work/
 .ml-labs/
 data/
@@ -17,6 +18,8 @@ runs/
 *.pt
 *.pdf
 *.epub
+*.zip
 infra/main.json
 dist/
 *.egg-info/
+/integrations/

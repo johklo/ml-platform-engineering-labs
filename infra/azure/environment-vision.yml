@@ -1,0 +1,19 @@
+name: ml-platform-labs-vision
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - mlflow==2.16.2
+      - numpy==1.26.4
+      - pandas==2.2.3
+      - scikit-learn==1.5.2
+      - joblib==1.4.2
+      - pillow==11.0.0
+      - pyyaml==6.0.2
+      - azure-identity==1.25.1
+      - azureml-mlflow==1.62.0.post6
+      - ultralytics==8.3.40
+      - torch==2.5.1
+      - torchvision==0.20.1

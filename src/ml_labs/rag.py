@@ -91,6 +91,8 @@ _DOCUMENTS = [
 
 def prepare_documents(output: str | Path) -> Path:
     output = Path(output)
+    if output.exists() and any(output.iterdir()):
+        raise FileExistsError(f"Choose an empty dataset directory: {output}")
     output.mkdir(parents=True, exist_ok=True)
     document_file = output / "documents.jsonl"
     document_file.write_text(

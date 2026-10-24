@@ -42,3 +42,22 @@ jobs:
           python-version: "3.12"
       - name: Exercise actual optional SDK
         run: uv run --locked --extra dev --extra ${{ matrix.extra }} pytest -q tests/test_optional_integrations.py -k ${{ matrix.selector }}
+      - name: Exercise online feature serving and recovery
+        if: matrix.extra == 'feast'
+        run: uv run --locked --extra dev --extra feast pytest -q tests/test_integrated_movies.py
+
+  integrated-workshop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Run native multi-tool failure and recovery scenario
+        run: uv run --locked --extra dev --extra feast --extra monitor ml-labs exercise --work .ml-labs/ci-integrated
+      - uses: actions/upload-artifact@v4
+        with:
+          name: synthetic-workshop-evidence
+          path: |
+            .ml-labs/ci-integrated/evidence.json
+            .ml-labs/ci-integrated/drift.html

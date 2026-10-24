@@ -31,8 +31,18 @@ uv run ml-labs smoke --work .ml-labs/smoke
 | 06 | [RAG와 LLMOps](docs/06-rag-llmops.md) | 검색과 생성의 분리, 평가와 외부 서비스 연결 |
 | 07 | [Azure 실행](docs/07-azure.md) | 배포 전 확인, AML 작업, 원격 추론, 비용과 정리 |
 | 08 | [책과의 대응 및 검증 범위](docs/08-coverage.md) | 실제 구현과 확장 과제, 실행하지 않은 경로 |
+| 09 | [피처, 출시와 복구 통합 실험](docs/09-integrated-operations.md) | 실제 Feast 요청 분기, 순위 기준선 비교, 배치 재처리와 출시 복구 |
+| 10 | [RAG 변경 평가와 출시](docs/10-rag-release.md) | 프롬프트와 문서 고정, 회귀 차단, 실제 요청 평가와 이전 버전 복구 |
 
 한 장씩 읽고 명령을 실행한 뒤, 각 장의 실패 실험까지 마치는 순서를 권합니다. 처음부터 모든 선택 의존성을 설치할 필요는 없습니다. 도구 버전의 충돌 때문에 `uv sync --all-extras`는 지원하지 않습니다.
+
+전체 운영 흐름의 로컬 재생은 다음 명령으로 실행합니다. `evidence.json`에 실제 피처 공급 전후의 응답, 재시도와 출시 복구 기록이 남습니다.
+
+```powershell
+uv run --locked --extra dev --extra feast --extra monitor ml-labs exercise --work .ml-labs/integrated-01
+```
+
+RAG는 `rag release init-demo`에서 시작해 불변 후보 생성, 이전 후보와 평가 비교, 게이트 통과 후 활성화, 실제 API 요청과 rollback까지 이어집니다. [10편](docs/10-rag-release.md)에는 무료 로컬 경로와 실제 런타임을 호출하는 Promptfoo 실행을 함께 정리했습니다. 로컬 인용 경로가 외부 LLM의 생성 품질까지 검증하는 것은 아닙니다.
 
 ## 실행 범위
 

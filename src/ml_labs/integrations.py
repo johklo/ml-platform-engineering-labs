@@ -11,7 +11,10 @@ import pandas as pd
 from ml_labs.common import read_json, verify_dataset, write_json
 from ml_labs.data import validate_ratings
 
-FEAST_FEATURES = ["user_movie_stats:average_rating", "user_movie_stats:ratings_count"]
+FEAST_FEATURES = [
+    "user_movie_stats:average_rating", "user_movie_stats:ratings_count",
+    "user_movie_stats:observed_at_unix",
+]
 FEAST_TABLE = Path("data") / "user_features.parquet"
 FEAST_LINEAGE = Path("data") / "lineage.json"
 KFP_IMAGE_PLACEHOLDER = "SET-YOUR-REGISTRY/ml-platform-engineering-labs:SET-IMAGE-TAG"
@@ -48,6 +51,9 @@ def build_user_feature_snapshots(ratings: pd.DataFrame) -> pd.DataFrame:
     snapshots = train.drop_duplicates(["user_id", "event_timestamp"], keep="last")
     snapshots = snapshots[["user_id", "event_timestamp", "average_rating", "ratings_count"]].copy()
     snapshots["created_timestamp"] = snapshots["event_timestamp"]
+    snapshots["observed_at_unix"] = (
+        snapshots["event_timestamp"].astype("int64") // 1_000_000_000
+    )
     return snapshots.reset_index(drop=True)
 
 
@@ -61,7 +67,7 @@ def feast_init(repo: str | Path, data: str | Path) -> Path:
             "Run `ml-labs movies prepare --output <dir>` first and pass it with --data."
         )
     manifest = verify_dataset(data)
-    if not manifest["dataset"].endswith("movies"):
+    if not (manifest["dataset"].endswith("movies") or manifest["dataset"].startswith("movielens")):
         raise ValueError(f"Feast lab expects a movie dataset, got {manifest['dataset']!r}.")
     existing = [
         repo / name for name in ("feature_store.yaml", "features.py", str(FEAST_TABLE))
@@ -119,6 +125,7 @@ user_features = FeatureView(
     schema=[
         Field(name="average_rating", dtype=Float32),
         Field(name="ratings_count", dtype=Int64),
+        Field(name="observed_at_unix", dtype=Int64),
     ],
     source=source,
     online=True,

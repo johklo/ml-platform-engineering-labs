@@ -85,7 +85,7 @@ uv run --extra monitor ml-labs tools drift --reference .ml-labs/reference.csv --
 
 ## 복구 실험과 정리
 
-같은 모델 이름으로 두 버전을 등록하고 이전 candidate 사본의 고정 URI로 서비스를 다시 시작해 보세요. 추천 결과가 어떤 버전에서 나온 것인지 확인합니다. 이 과정은 로컬 재시작 방식이며 트래픽 분할이나 무중단 복구를 구현하지는 않습니다.
+같은 모델 이름으로 두 버전을 등록하고 [출시와 복구 과정](09-integrated-operations.md)을 실행합니다. 평가와 고정 버전이 연결된 release record를 만들고, 포인터 전환 직전의 실패에서 기존 버전이 유지되는지 확인합니다. 이 과정은 로컬 재시작 방식이며 트래픽 분할이나 무중단 복구를 구현하지는 않습니다.
 
 API, BentoML과 MLflow UI는 각각 실행한 터미널에서 Ctrl+C로 종료합니다. 생성 모델은 `.ml-labs`, `mlruns`, BentoML의 사용자 모델 저장소에 남을 수 있습니다. 삭제 전에 실행 기록의 참조 관계를 확인하세요.
 

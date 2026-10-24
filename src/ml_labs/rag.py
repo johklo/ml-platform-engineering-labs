@@ -221,6 +221,10 @@ def index_documents(data: str | Path, output: str | Path, top_k: int = 3,
 
 def query_local(candidate_path: str | Path, query: str) -> dict[str, Any]:
     candidate = read_json(candidate_path)
+    if candidate.get("schema") == "ml-labs-rag-release-v1":
+        from ml_labs.rag_lifecycle import query_candidate
+
+        return query_candidate(candidate_path, query)
     if candidate.get("answer_mode") != "extractive_offline":
         raise ValueError("Local query requires an extractive_offline candidate.")
     mlflow.set_tracking_uri(candidate["tracking_uri"])

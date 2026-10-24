@@ -85,6 +85,7 @@ def make_parser() -> argparse.ArgumentParser:
     movie_eval.add_argument("--candidate", type=_path, default=_candidate_default("movies"))
     movie_eval.add_argument("--data", type=_path, default=Path("data/movies"))
     movie_eval.add_argument("--max-rmse", type=float, default=1.5)
+    movie_eval.add_argument("--min-ndcg-lift", type=float)
     movie_eval.add_argument("--report", type=_path, default=Path(".ml-labs/reports/movies-test.json"))
 
     rag = commands.add_parser("rag", help="Synthetic document retrieval and LLMOps evaluation")
@@ -108,6 +109,44 @@ def make_parser() -> argparse.ArgumentParser:
         "azure-index", help="Create/update an index in an existing Azure AI Search service"
     )
     rag_azure_index.add_argument("--data", type=_path, default=Path("data/documents"))
+    rag_release = rag_cmd.add_parser("release", help="Version, evaluate, activate and restore RAG")
+    rag_release_cmd = rag_release.add_subparsers(dest="release_action", required=True)
+    rag_demo = rag_release_cmd.add_parser("init-demo")
+    rag_demo.add_argument("--output", type=_path, required=True)
+    rag_create = rag_release_cmd.add_parser("create")
+    rag_create.add_argument("--corpus", type=_path, required=True)
+    rag_create.add_argument("--config", type=_path, required=True)
+    rag_create.add_argument("--prompt", type=_path, required=True)
+    rag_create.add_argument("--evaluation", type=_path, required=True)
+    rag_create.add_argument("--output", type=_path, required=True)
+    rag_assess = rag_release_cmd.add_parser("evaluate")
+    rag_assess.add_argument("--candidate", type=_path, required=True)
+    rag_assess.add_argument("--report", type=_path, required=True)
+    rag_assess.add_argument("--baseline", type=_path)
+    rag_assess.add_argument("--max-regression", type=float, default=0.0)
+    rag_assess.add_argument("--min-pass-rate", type=float, default=1.0)
+    rag_assess.add_argument("--max-latency-ms", type=float)
+    rag_assess.add_argument("--deepeval", action="store_true")
+    rag_assess.add_argument("--deepeval-threshold", type=float, default=0.7)
+    rag_activate = rag_release_cmd.add_parser("activate")
+    rag_activate.add_argument("--candidate", type=_path, required=True)
+    rag_activate.add_argument("--report", type=_path, required=True)
+    rag_activate.add_argument("--store", type=_path, required=True)
+    rag_restore = rag_release_cmd.add_parser("rollback")
+    rag_restore.add_argument("--store", type=_path, required=True)
+    rag_restore.add_argument("--release-id")
+    rag_read = rag_release_cmd.add_parser("query")
+    rag_read.add_argument("--store", type=_path, required=True)
+    rag_read.add_argument("--query", required=True)
+    rag_read.add_argument("--release-id")
+    rag_read.add_argument("--trace", action="store_true")
+    rag_prompt = rag_cmd.add_parser("prompt")
+    prompt_cmd = rag_prompt.add_subparsers(dest="prompt_action", required=True)
+    prompt_register = prompt_cmd.add_parser("register")
+    prompt_register.add_argument("--store", type=_path, required=True)
+    prompt_register.add_argument("--name", required=True)
+    prompt_register.add_argument("--version", required=True)
+    prompt_register.add_argument("--template", required=True)
 
     registry = commands.add_parser("register", help="Register a gated MLflow model and verify reload")
     registry.add_argument("--candidate", type=_path, required=True)
@@ -119,12 +158,41 @@ def make_parser() -> argparse.ArgumentParser:
     serve.add_argument("--cards", type=_path)
     serve.add_argument("--movies", type=_path)
     serve.add_argument("--rag", type=_path)
+    serve.add_argument("--movie-release", type=_path)
+    serve.add_argument("--rag-release", type=_path)
+    serve.add_argument("--feast-repo", type=_path)
+    serve.add_argument("--feature-min-ratings", type=int, default=10)
+    serve.add_argument("--feature-max-age-seconds", type=int, default=30 * 86400)
+    serve.add_argument("--feature-unavailable", choices=["reject", "popularity"], default="reject")
+    serve.add_argument("--feature-as-of", help="Explicit simulated UTC clock for old lab data")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
 
     smoke = commands.add_parser("smoke", help="Execute all three local train/evaluate/register paths")
     smoke.add_argument("--work", type=_path, default=DEFAULT_WORK)
 
+    release = commands.add_parser("release", help="Activate or restore a fixed model release")
+    release_cmd = release.add_subparsers(dest="action", required=True)
+    activate = release_cmd.add_parser("activate")
+    activate.add_argument("--candidate", type=_path, required=True)
+    activate.add_argument("--report", type=_path, required=True)
+    activate.add_argument("--store", type=_path, required=True)
+    activate.add_argument("--fail-before-switch", action="store_true")
+    rollback = release_cmd.add_parser("rollback")
+    rollback.add_argument("--store", type=_path, required=True)
+    rollback.add_argument("--release-id")
+    show = release_cmd.add_parser("show")
+    show.add_argument("--store", type=_path, required=True)
+    batch = commands.add_parser("batch", help="Idempotent batch recommendations")
+    batch.add_argument("--candidate", type=_path, required=True)
+    batch.add_argument("--report", type=_path, required=True)
+    batch.add_argument("--users", type=_path, required=True)
+    batch.add_argument("--output", type=_path, required=True)
+    batch.add_argument("--job-key", required=True)
+    batch.add_argument("--fail-before-commit", action="store_true")
+    exercise = commands.add_parser("exercise", help="Run the integrated failure/recovery workshop")
+    exercise.add_argument("--work", type=_path, required=True)
+    exercise.add_argument("--data", type=_path)
     azure = commands.add_parser("azure", help="Render Azure ML SDK v2 config; never provisions resources")
     azure_cmd = azure.add_subparsers(dest="action", required=True)
     for action in ("pipeline", "endpoint"):
@@ -186,6 +254,9 @@ def make_parser() -> argparse.ArgumentParser:
     promptfoo_run.add_argument(
         "--config", type=_path, default=Path("integrations/promptfoo/promptfooconfig.yaml")
     )
+    promptfoo_release = promptfoo_cmd.add_parser("release-config", aliases=["release-init"])
+    promptfoo_release.add_argument("--candidate", type=_path, required=True)
+    promptfoo_release.add_argument("--output", type=_path, required=True)
 
     for tool_name, help_text in (
         ("guardrails", "Validate a RAG response using Guardrails AI"),
@@ -235,10 +306,20 @@ def _execute(args) -> int:
         elif args.action == "train":
             result = train_movies(args.data, args.output, args.rank, args.seed, args.work)
         else:
-            result = evaluate_movies(args.candidate, args.data, args.report, args.max_rmse)
+            result = evaluate_movies(
+                args.candidate, args.data, args.report, args.max_rmse, args.min_ndcg_lift,
+            )
         _emit({"result": result})
     elif args.command == "rag":
-        if args.action == "prepare":
+        if args.action == "release":
+            _rag_release(args)
+            return 0
+        elif args.action == "prompt":
+            from ml_labs.rag_lifecycle import register_prompt
+
+            _emit({"prompt": register_prompt(args.store, args.name, args.version, args.template)})
+            return 0
+        elif args.action == "prepare":
             result = prepare_documents(args.output)
         elif args.action == "index":
             result = index_documents(args.data, args.output, args.top_k, args.work)
@@ -258,17 +339,49 @@ def _execute(args) -> int:
     elif args.command == "register":
         _emit(register_candidate(args.candidate, args.name, args.report, args.alias))
     elif args.command == "serve":
-        if not any((args.cards, args.movies, args.rag)):
+        if not any((args.cards, args.movies, args.rag, args.movie_release, args.rag_release)):
             raise ValueError("Provide at least one candidate using --cards, --movies, or --rag.")
         import uvicorn
 
         from ml_labs.api import create_app
+        from ml_labs.features import FeaturePolicy
 
         uvicorn.run(
-            create_app(args.cards, args.movies, args.rag),
+            create_app(
+                args.cards, args.movies, args.rag,
+                feast_repo=args.feast_repo, movie_release=args.movie_release,
+                rag_release=args.rag_release,
+                feature_policy=FeaturePolicy(
+                    min_ratings=args.feature_min_ratings,
+                    max_age_seconds=args.feature_max_age_seconds,
+                    unavailable=args.feature_unavailable, as_of=args.feature_as_of,
+                ),
+            ),
             host=args.host,
             port=args.port,
         )
+    elif args.command == "exercise":
+        from ml_labs.exercise import run_exercise
+
+        _emit(run_exercise(args.work, args.data))
+    elif args.command == "release":
+        from ml_labs.releases import activate_model, read_release, rollback_model
+
+        if args.action == "activate":
+            _emit(activate_model(
+                args.store, args.candidate, args.report, args.fail_before_switch,
+            ))
+        elif args.action == "rollback":
+            _emit(rollback_model(args.store, args.release_id))
+        else:
+            _emit(read_release(args.store))
+    elif args.command == "batch":
+        from ml_labs.batch import batch_recommend
+
+        _emit(batch_recommend(
+            args.candidate, args.report, args.users, args.output,
+            args.job_key, args.fail_before_commit,
+        ))
     elif args.command == "smoke":
         result = _smoke(args.work)
         _emit(result)
@@ -342,9 +455,15 @@ def _run_tool(args) -> None:
 
         _emit({"output": build_bento(args.candidate, args.output)})
     elif args.tool == "promptfoo":
-        from ml_labs.llmops import create_promptfoo_config, run_promptfoo
+        from ml_labs.llmops import (
+            create_promptfoo_config,
+            create_release_promptfoo_config,
+            run_promptfoo,
+        )
 
-        if args.action == "init":
+        if args.action in {"release-init", "release-config"}:
+            _emit({"config": create_release_promptfoo_config(args.candidate, args.output)})
+        elif args.action == "init":
             _emit({"config": create_promptfoo_config(args.output)})
         else:
             _emit(run_promptfoo(args.config))
@@ -383,12 +502,43 @@ def _run_tool(args) -> None:
         ))
 
 
+def _rag_release(args):
+    from ml_labs import rag_lifecycle
+
+    if args.release_action == "init-demo":
+        result = rag_lifecycle.init_demo(args.output)
+    elif args.release_action == "create":
+        result = {"candidate": rag_lifecycle.create_candidate(
+            args.corpus, args.config, args.prompt, args.evaluation, args.output,
+        )}
+    elif args.release_action == "evaluate":
+        result = rag_lifecycle.evaluate_candidate(
+            args.candidate, args.report, args.baseline,
+            max_regression=args.max_regression, min_pass_rate=args.min_pass_rate,
+            max_latency_ms=args.max_latency_ms, deepeval=args.deepeval,
+            deepeval_threshold=args.deepeval_threshold,
+        )
+        _emit(result)
+        if result["passed"] is not True:
+            raise ValueError(f"RAG release gate failed; report: {args.report}")
+        return
+    elif args.release_action == "activate":
+        result = rag_lifecycle.activate_release(args.store, args.candidate, args.report)
+    elif args.release_action == "rollback":
+        result = rag_lifecycle.rollback_release(args.store, args.release_id)
+    else:
+        result = rag_lifecycle.query_release(
+            args.store, args.query, release_id=args.release_id, trace=args.trace,
+        )
+    _emit(result)
+
+
 def main() -> None:
     parser = make_parser()
     args = parser.parse_args()
     try:
         sys.exit(_execute(args))
-    except (ValueError, RuntimeError, FileNotFoundError, ImportError) as exc:
+    except (ValueError, RuntimeError, FileNotFoundError, FileExistsError, ImportError) as exc:
         parser.exit(2, f"ml-labs: error: {exc}\n")
 
 

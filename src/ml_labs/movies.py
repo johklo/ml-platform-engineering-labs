@@ -4,7 +4,8 @@ from pathlib import Path
 import mlflow
 import numpy as np
 import pandas as pd
-from mlflow.models import infer_signature
+from mlflow.models import ModelSignature, infer_signature
+from mlflow.types import ColSpec, Schema
 from sklearn.decomposition import TruncatedSVD
 
 from ml_labs.common import read_json, record_context, setup_tracking, verify_dataset, write_json
@@ -22,11 +23,16 @@ class Recommender(mlflow.pyfunc.PythonModel):
 
     def predict(self, context, model_input, params=None):
         results = []
-        for value in model_input["user_id"]:
+        for record in model_input.to_dict(orient="records"):
+            value = record["user_id"]
+            strategy = record.get("strategy", "auto")
+            if strategy not in {"auto", "popularity"}:
+                raise ValueError("strategy must be auto or popularity.")
             if not isinstance(value, str) or not value.strip():
                 raise ValueError("user_id must be a nonempty string.")
             user = self.users.get(value)
-            scores = self.popularity.copy() if user is None else self.scores[user].copy()
+            popular = user is None or strategy == "popularity"
+            scores = self.popularity.copy() if popular else self.scores[user].copy()
             if user is not None:
                 scores[self.seen[user]] = -np.inf
             indices = np.argsort(-scores, kind="stable")[: self.metadata["top_k"]]
@@ -36,7 +42,9 @@ class Recommender(mlflow.pyfunc.PythonModel):
             ]
             results.append({
                 "user_id": value,
-                "status": "cold_start_popularity" if user is None else "personalized",
+                "status": "cold_start_popularity" if user is None else (
+                    "feature_routed_popularity" if popular else "personalized"
+                ),
                 "recommendations": json.dumps(recommendations),
             })
         return pd.DataFrame(results)
@@ -78,6 +86,11 @@ def train_movies(data, output, rank=4, seed=42, work="work"):
         "validation_rmse": float(np.sqrt(np.mean(error))),
         "baseline_rmse": float(np.sqrt(np.mean(baseline_error))),
     }
+    validation_ranking = ranking_metrics(
+        scores, popularity, seen, users, items, validation,
+    )
+    metrics.update({f"validation_{key}": value for key, value in validation_ranking.items()
+                    if isinstance(value, (int, float))})
     setup_tracking(work)
     with mlflow.start_run() as run:
         record_context(manifest, {"rank": effective_rank, "seed": seed})
@@ -91,7 +104,13 @@ def train_movies(data, output, rank=4, seed=42, work="work"):
             "model", python_model=model,
             artifacts={"metadata": str(output / "metadata.json"), "factors": str(output / "factors.npz")},
             code_paths=[str(Path(__file__).parent)],
-            signature=infer_signature(example, model.predict(None, example)),
+            signature=ModelSignature(
+                inputs=Schema([
+                    ColSpec("string", "user_id"),
+                    ColSpec("string", "strategy", required=False),
+                ]),
+                outputs=infer_signature(example, model.predict(None, example)).outputs,
+            ),
             input_example=example,
             pip_requirements=[
                 "mlflow==2.16.2", "numpy==1.26.4", "pandas==2.2.3",
@@ -104,11 +123,46 @@ def train_movies(data, output, rank=4, seed=42, work="work"):
             "tracking_uri": mlflow.get_tracking_uri(),
             "dataset": manifest, "metrics": metrics,
             "data_path": str(data.resolve()),
+            "serving_contract": "movie-routing-v2",
         })
     return output / "candidate.json"
 
 
-def evaluate_movies(candidate, data, output, max_rmse=1.5):
+def ranking_metrics(scores, popularity, seen, users, items, holdout, k=5):
+    """Macro ranking metrics for relevant (rating >= 4) held-out items, excluding train items."""
+    import math
+
+    item_index = {item: index for index, item in enumerate(items)}
+    metrics = {"model": [], "baseline": []}
+    for user_index, user in enumerate(users):
+        relevant = {
+            item_index[item] for item in holdout.loc[
+                (holdout.user_id == user) & (holdout.rating >= 4), "item_id"
+            ] if item in item_index
+        }
+        if not relevant:
+            continue
+        for name, values in (("model", scores[user_index]), ("baseline", popularity)):
+            values = values.copy()
+            values[seen[user_index]] = -np.inf
+            top = [int(i) for i in np.argsort(-values, kind="stable")[:k]
+                   if np.isfinite(values[i])]
+            hits = [int(item in relevant) for item in top]
+            dcg = sum(hit / math.log2(position + 2) for position, hit in enumerate(hits))
+            ideal = sum(1 / math.log2(position + 2) for position in range(min(k, len(relevant))))
+            metrics[name].append((sum(hits) / len(relevant), dcg / ideal))
+    result = {"ranking_users": len(metrics["model"])}
+    for name, values in metrics.items():
+        result[f"{name}_recall_at_5"] = float(np.mean([v[0] for v in values])) if values else None
+        result[f"{name}_ndcg_at_5"] = float(np.mean([v[1] for v in values])) if values else None
+    return result
+
+
+def evaluate_movies(candidate, data, output, max_rmse=1.5, min_ndcg_lift=None):
+    if not np.isfinite(max_rmse) or max_rmse < 0:
+        raise ValueError("max_rmse must be finite and nonnegative.")
+    if min_ndcg_lift is not None and not np.isfinite(min_ndcg_lift):
+        raise ValueError("min_ndcg_lift must be finite.")
     candidate = read_json(candidate)
     verify_dataset(data, candidate["dataset"])
     frame = pd.read_csv(Path(data) / "ratings.csv")
@@ -124,19 +178,40 @@ def evaluate_movies(candidate, data, output, max_rmse=1.5):
         recommended = {r["item_id"] for r in json.loads(prediction.recommendations)}
         if train_items & recommended:
             raise ValueError("Training items leaked into recommendations.")
-    passed = candidate["metrics"]["validation_rmse"] <= max_rmse
+    implementation = model.unwrap_python_model()
+    validation = frame[frame.split == "validation"]
+    user_index = {user: i for i, user in enumerate(implementation.metadata["users"])}
+    item_index = {item: i for i, item in enumerate(implementation.metadata["items"])}
+    squared_error = [
+        (implementation.scores[user_index[row.user_id], item_index[row.item_id]] - row.rating) ** 2
+        for row in validation.itertuples()
+    ]
+    validation_rmse = float(np.sqrt(np.mean(squared_error)))
+    ranking = ranking_metrics(
+        implementation.scores, implementation.popularity, implementation.seen,
+        implementation.metadata["users"], implementation.metadata["items"], validation,
+    )
+    rmse_passed = validation_rmse <= max_rmse
+    lift = (ranking["model_ndcg_at_5"] - ranking["baseline_ndcg_at_5"]
+            if ranking["ranking_users"] else None)
+    ranking_passed = min_ndcg_lift is None or (lift is not None and lift >= min_ndcg_lift)
+    passed = rmse_passed and ranking_passed
     report = {
         "task": "movies", "passed": passed, "max_validation_rmse": max_rmse,
         "candidate": candidate,
         "checks": {"excludes_seen_items": True, "evaluated_users": len(predictions)},
         "test_policy": "Test split remains untouched unless validation passes.",
+        "validation_ranking": ranking,
+        "observed_validation_rmse": validation_rmse,
+        "ranking_gate": {"min_ndcg_lift": min_ndcg_lift, "observed_lift": lift,
+                         "passed": ranking_passed},
     }
     if not passed:
         write_json(output, report)
         with mlflow.start_run(run_id=candidate["run_id"]):
             mlflow.log_dict(report, "evaluation/validation.json")
             mlflow.set_tag("validation_passed", "false")
-        raise ValueError(f"Model gate rejected validation RMSE > {max_rmse}; report: {output}")
+        raise ValueError(f"Model validation gate rejected candidate; report: {output}")
 
     test = frame[frame["split"] == "test"]
     test_users = sorted(test["user_id"].unique().tolist())
@@ -159,6 +234,10 @@ def evaluate_movies(candidate, data, output, max_rmse=1.5):
         "relevance_threshold": 4,
         "test_rows": len(test),
     })
+    report["test_ranking"] = ranking_metrics(
+        implementation.scores, implementation.popularity, implementation.seen,
+        implementation.metadata["users"], implementation.metadata["items"], test,
+    )
     report["test_policy"] = "Test split was scored only after the validation gate."
     write_json(output, report)
     with mlflow.start_run(run_id=candidate["run_id"]):
